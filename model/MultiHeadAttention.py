@@ -27,25 +27,22 @@ class DotProductAttention(nn.Module):
         return X
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self):
+    def __init__(self, W, Wo):
         super().__init__()
         self.linear = nn.Linear(in_features=64, out_features=64)
         self.DotProductAttention = DotProductAttention()
         self.heads = 8
         self.embedding_dim= 512
+        self.W = W
+        self.Wo = Wo
     
     def get_projections(self, Q, K, V):
         print("linear ", self.linear(Q).shape, self.linear(K).shape, self.linear(V).shape,)
         return self.linear(Q), self.linear(K), self.linear(V)
     
-    def MaskedMultiHeadAttention(self,  X, W, Wo):
-            # Assuming Q shape is (Batch_Size, Seq_Len, Embed_Dim)
-            seq_len = X.shape[0]
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len)
-            return self.MultiHeadAttention(X, W, Wo) + causal_mask
         
-    def forward(self, X, W, Wo):
-        FusedQKVTensor = torch.matmul(X, W) # shape: (tokens, 1536)
+    def forward(self, X):
+        FusedQKVTensor = torch.matmul(X, self.W) # shape: (tokens, 1536)
         
         token_number = FusedQKVTensor.shape[0]
         # Unpack the tuple into separate Q, K, and V tensors, each shape (tokens, 512)
@@ -68,9 +65,20 @@ class MultiHeadAttention(nn.Module):
             final_tensor = torch.cat((final_tensor, current), dim=1)
             print(final_tensor.shape)
         
-        return torch.matmul(final_tensor, Wo)
+        return torch.matmul(final_tensor, self.Wo)
+
+class MaskedMultiHeadAttention(nn.Module):
+    def __init__(self, W, Wo):
+        super().__init__()
+        self.W = W
+        self.Wo = Wo    
+        self.multiheadAttention = MultiHeadAttention(self.W, self.Wo)
     
-    
+    def forward(self,  X):
+        seq_len = X.shape[0]
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len)
+        return self.MultiHeadAttention(X) + causal_mask
+        
 class Encoder(nn.Module):
     def __init__(self, embedding_dim=512):
         super().__init__()
