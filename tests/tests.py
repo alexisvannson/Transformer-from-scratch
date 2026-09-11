@@ -1,15 +1,20 @@
 import pytest
 import torch
 
-from model.MultiHeadAttention import (
+from model.Transformer import (
     DotProductAttention,
     MultiHeadAttention,
+    FinalMultiHeadAttention,
     FFN,
+    EncoderBlock,
+    FinalEncoderBlock,
     Encoder,
     PositionalEncoding,
 )
 
 EMBED_DIM = 512
+HEADS = 8
+HEAD_DIM = EMBED_DIM // HEADS
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +28,6 @@ def test_dot_product_attention_shape(tokens, d_k):
 
     out = attention(Q, K, V)
 
-    # attention output should always take the shape of V: (tokens, d_k)
     assert out.shape == (tokens, d_k), f"expected {(tokens, d_k)}, got {tuple(out.shape)}"
 
 
@@ -47,17 +51,18 @@ def test_dot_product_attention_query_len_can_differ_from_key_value_len():
 @pytest.mark.parametrize("tokens", [1, 5, 10])
 def test_get_projections_preserves_shape(tokens):
     mha = MultiHeadAttention()
-    Q, K, V = torch.randn(tokens, 64), torch.randn(tokens, 64), torch.randn(tokens, 64)
+    Q = torch.randn(tokens, HEAD_DIM)
+    K, V = torch.randn(tokens, HEAD_DIM), torch.randn(tokens, HEAD_DIM)
 
     q_proj, k_proj, v_proj = mha.get_projections(Q, K, V)
 
-    assert q_proj.shape == (tokens, 64)
-    assert k_proj.shape == (tokens, 64)
-    assert v_proj.shape == (tokens, 64)
+    assert q_proj.shape == (tokens, HEAD_DIM)
+    assert k_proj.shape == (tokens, HEAD_DIM)
+    assert v_proj.shape == (tokens, HEAD_DIM)
 
 
 # ---------------------------------------------------------------------------
-# MultiHeadAttention.MultiHeadAttention (full forward)
+# MultiHeadAttention (full forward, self-attention)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("tokens", [1, 5, 10, 17])
@@ -66,27 +71,27 @@ def test_multi_head_attention_output_shape(tokens):
     passed in, not a hardcoded sequence length."""
     mha = MultiHeadAttention()
     X = torch.randn(tokens, EMBED_DIM)
-    W = torch.randn(EMBED_DIM, EMBED_DIM * 3)
-    Wo = torch.randn(EMBED_DIM, EMBED_DIM)
 
-    out = mha(X, W, Wo)
+    out = mha(X)
 
     assert out.shape == (tokens, EMBED_DIM), f"expected {(tokens, EMBED_DIM)}, got {tuple(out.shape)}"
 
 
-def test_multi_head_attention_concatenates_full_width():
-    """If a head's contribution were silently dropped (e.g. wrong concat dim,
-    or fewer than h heads processed), the pre-Wo tensor would be narrower
-    than embedding_dim and this would fail even with Wo as a passthrough."""
-    mha = MultiHeadAttention()
-    tokens = 6
+# ---------------------------------------------------------------------------
+# FinalMultiHeadAttention - also hands back K, V (per head) for the decoder's
+# cross-attention to consume
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("tokens", [1, 5, 10])
+def test_final_multi_head_attention_returns_output_and_kv_shapes(tokens):
+    mha = FinalMultiHeadAttention()
     X = torch.randn(tokens, EMBED_DIM)
-    W = torch.randn(EMBED_DIM, EMBED_DIM * 3)
-    Wo = torch.eye(EMBED_DIM)  # identity: output width should equal input width to Wo
 
-    out = mha(X, W, Wo)
+    out, K, V = mha(X)
 
-    assert out.shape[-1] == EMBED_DIM
+    assert out.shape == (tokens, EMBED_DIM), f"expected {(tokens, EMBED_DIM)}, got {tuple(out.shape)}"
+    assert K.shape == (HEADS, tokens, HEAD_DIM), f"expected {(HEADS, tokens, HEAD_DIM)}, got {tuple(K.shape)}"
+    assert V.shape == (HEADS, tokens, HEAD_DIM), f"expected {(HEADS, tokens, HEAD_DIM)}, got {tuple(V.shape)}"
 
 
 # ---------------------------------------------------------------------------
@@ -109,15 +114,15 @@ def test_ffn_custom_dims_change_output_width():
 
 
 # ---------------------------------------------------------------------------
-# Encoder
+# EncoderBlock
 # ---------------------------------------------------------------------------
 
 def test_add_and_norm_preserves_shape():
-    encoder = Encoder(embedding_dim=EMBED_DIM)
+    block = EncoderBlock(embedding_dim=EMBED_DIM)
     tokens = 8
     initial, delta = torch.randn(tokens, EMBED_DIM), torch.randn(tokens, EMBED_DIM)
 
-    out = encoder.AddAndNorm(initial, delta)
+    out = block.AddAndNorm(initial, delta)
 
     assert out.shape == (tokens, EMBED_DIM)
 
@@ -125,24 +130,76 @@ def test_add_and_norm_preserves_shape():
 def test_add_and_norm_rejects_mismatched_shapes():
     """AddAndNorm is an elementwise residual add - mismatched shapes should
     fail loudly, not silently broadcast into something unintended."""
-    encoder = Encoder(embedding_dim=EMBED_DIM)
+    block = EncoderBlock(embedding_dim=EMBED_DIM)
     initial = torch.randn(8, EMBED_DIM)
     delta = torch.randn(5, EMBED_DIM)
 
     with pytest.raises(RuntimeError):
-        encoder.AddAndNorm(initial, delta)
+        block.AddAndNorm(initial, delta)
 
 
 @pytest.mark.parametrize("tokens", [1, 5, 10])
 def test_encoder_block_output_shape(tokens):
-    encoder = Encoder(embedding_dim=EMBED_DIM)
+    block = EncoderBlock(embedding_dim=EMBED_DIM)
     X = torch.randn(tokens, EMBED_DIM)
-    W = torch.randn(EMBED_DIM, EMBED_DIM * 3)
-    Wo = torch.randn(EMBED_DIM, EMBED_DIM)
 
-    out = encoder.EncoderBlock(X, W, Wo)
+    out = block(X)
 
     assert out.shape == (tokens, EMBED_DIM)
+
+
+# ---------------------------------------------------------------------------
+# FinalEncoderBlock - unlike EncoderBlock, forward returns (X, K, V): the
+# transformed tensor plus the K, V the decoder's cross-attention will use.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("tokens", [1, 5, 10])
+def test_final_encoder_block_output_shape(tokens):
+    block = FinalEncoderBlock(embedding_dim=EMBED_DIM)
+    X = torch.randn(tokens, EMBED_DIM)
+
+    out, K, V = block(X)
+
+    assert out.shape == (tokens, EMBED_DIM), f"expected {(tokens, EMBED_DIM)}, got {tuple(out.shape)}"
+    assert K.shape == (HEADS, tokens, HEAD_DIM), f"expected {(HEADS, tokens, HEAD_DIM)}, got {tuple(K.shape)}"
+    assert V.shape == (HEADS, tokens, HEAD_DIM), f"expected {(HEADS, tokens, HEAD_DIM)}, got {tuple(V.shape)}"
+
+
+# ---------------------------------------------------------------------------
+# Encoder - full stack. forward returns (X, K, V): the stack's final output
+# plus the K, V handed off by the final block for the decoder to consume.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("tokens", [1, 5, 10])
+def test_encoder_output_shape(tokens):
+    encoder = Encoder(n_blocks=3)
+    X = torch.randn(tokens, EMBED_DIM)
+
+    out, K, V = encoder(X)
+
+    assert out.shape == (tokens, EMBED_DIM), f"expected {(tokens, EMBED_DIM)}, got {tuple(out.shape)}"
+    assert K.shape == (HEADS, tokens, HEAD_DIM), f"expected {(HEADS, tokens, HEAD_DIM)}, got {tuple(K.shape)}"
+    assert V.shape == (HEADS, tokens, HEAD_DIM), f"expected {(HEADS, tokens, HEAD_DIM)}, got {tuple(V.shape)}"
+
+
+def test_encoder_has_n_blocks_minus_one_in_sequential():
+    """The final block is called separately in Encoder.forward (so it can
+    return its (X, K, V) tuple without nn.Sequential trying to chain that
+    tuple into the next module) - only the other n_blocks - 1 blocks live
+    inside self.EncoderBlocks."""
+    encoder = Encoder(n_blocks=3)
+
+    assert len(list(encoder.EncoderBlocks)) == 2
+
+
+def test_encoder_blocks_have_independent_weights():
+    """Each block should learn its own weights. If two blocks are literally
+    the same Python object, they'll share one set of weights instead of
+    being independently trainable layers."""
+    encoder = Encoder(n_blocks=3)
+    blocks = list(encoder.EncoderBlocks)
+
+    assert blocks[0] is not blocks[1], "block 0 and block 1 are the same object - they share one set of weights"
 
 
 # ---------------------------------------------------------------------------
@@ -161,20 +218,18 @@ def test_add_positional_encodings_preserves_shape():
 
 
 # ---------------------------------------------------------------------------
-# MaskedMultiHeadAttention
+# Still under construction - documented but not asserted yet
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skip(
-    reason="MaskedMultiHeadAttention calls self.MultiHeadAttention(Q, K, V) but "
-           "MultiHeadAttention's signature is (X, W, Wo) - contract mismatch to "
-           "resolve before this can pass. Un-skip once fixed."
-)
+@pytest.mark.skip(reason="CrossAttention.forward is still a stub (`pass`, and its signature is missing "
+                          "`self`) - write the real assertion once it takes shape.")
+def test_cross_attention_output_shape():
+    pass
+
+
+@pytest.mark.skip(reason="MaskedMultiHeadAttention's constructor still expects the pre-refactor "
+                          "MultiHeadAttention(W, Wo) signature, and forward references "
+                          "self.MultiHeadAttention which isn't the attribute name it assigned "
+                          "(self.multiheadAttention) - contract not settled yet.")
 def test_masked_multi_head_attention_output_shape():
-    mha = MultiHeadAttention()
-    tokens = 6
-    Q = torch.randn(tokens, EMBED_DIM)
-    K, V = torch.randn(tokens, EMBED_DIM), torch.randn(tokens, EMBED_DIM)
-
-    out = mha.MaskedMultiHeadAttention(Q, K, V)
-
-    assert out.shape == (tokens, EMBED_DIM)
+    pass
