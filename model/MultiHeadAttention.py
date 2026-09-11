@@ -21,13 +21,10 @@ class DotProductAttention(nn.Module):
         super().__init__()
         self.dk = 64
         
-    def DotProductAttention(self, Q, K, V):
+    def forward(self, Q, K, V):
         coefs = F.softmax(torch.matmul(Q, torch.transpose(K, 0, 1)) * (1 / sqrt(self.dk)), dim=1) # softmax applied horizontally
         X = torch.matmul(coefs, V)
         return X
-    
-    def forward(self, x):
-        pass
 
 class MultiHeadAttention(nn.Module):
     def __init__(self):
@@ -40,8 +37,14 @@ class MultiHeadAttention(nn.Module):
     def get_projections(self, Q, K, V):
         print("linear ", self.linear(Q).shape, self.linear(K).shape, self.linear(V).shape,)
         return self.linear(Q), self.linear(K), self.linear(V)
+    
+    def MaskedMultiHeadAttention(self, Q, K, V):
+            # Assuming Q shape is (Batch_Size, Seq_Len, Embed_Dim)
+            seq_len = Q.size(1)
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len)
+            return self.MultiHeadAttention(Q, K, V) + causal_mask
         
-    def MultiHeadAttention(self, X, W, Wo):
+    def forward(self, X, W, Wo):
         FusedQKVTensor = torch.matmul(X, W) # shape: (tokens, 1536)
         
         token_number = FusedQKVTensor.shape[0]
@@ -67,15 +70,7 @@ class MultiHeadAttention(nn.Module):
         
         return torch.matmul(final_tensor, Wo)
     
-    def MaskedMultiHeadAttention(self, Q, K, V):
-        # Assuming Q shape is (Batch_Size, Seq_Len, Embed_Dim)
-        seq_len = Q.size(1)
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len)
-        return self.MultiHeadAttention(Q, K, V) + causal_mask
     
-    def forward(self, x):
-            pass
-
 class Encoder(nn.Module):
     def __init__(self, embedding_dim=512):
         super().__init__()

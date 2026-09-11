@@ -21,7 +21,7 @@ def test_dot_product_attention_shape(tokens, d_k):
     attention = DotProductAttention()
     Q, K, V = torch.randn(tokens, d_k), torch.randn(tokens, d_k), torch.randn(tokens, d_k)
 
-    out = attention.DotProductAttention(Q, K, V)
+    out = attention(Q, K, V)
 
     # attention output should always take the shape of V: (tokens, d_k)
     assert out.shape == (tokens, d_k), f"expected {(tokens, d_k)}, got {tuple(out.shape)}"
@@ -35,7 +35,7 @@ def test_dot_product_attention_query_len_can_differ_from_key_value_len():
     Q = torch.randn(q_tokens, d_k)
     K, V = torch.randn(kv_tokens, d_k), torch.randn(kv_tokens, d_k)
 
-    out = attention.DotProductAttention(Q, K, V)
+    out = attention(Q, K, V)
 
     assert out.shape == (q_tokens, d_k)
 
@@ -69,7 +69,7 @@ def test_multi_head_attention_output_shape(tokens):
     W = torch.randn(EMBED_DIM, EMBED_DIM * 3)
     Wo = torch.randn(EMBED_DIM, EMBED_DIM)
 
-    out = mha.MultiHeadAttention(X, W, Wo)
+    out = mha(X, W, Wo)
 
     assert out.shape == (tokens, EMBED_DIM), f"expected {(tokens, EMBED_DIM)}, got {tuple(out.shape)}"
 
@@ -84,7 +84,7 @@ def test_multi_head_attention_concatenates_full_width():
     W = torch.randn(EMBED_DIM, EMBED_DIM * 3)
     Wo = torch.eye(EMBED_DIM)  # identity: output width should equal input width to Wo
 
-    out = mha.MultiHeadAttention(X, W, Wo)
+    out = mha(X, W, Wo)
 
     assert out.shape[-1] == EMBED_DIM
 
