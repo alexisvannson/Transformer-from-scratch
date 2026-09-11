@@ -40,10 +40,9 @@ class MultiHeadAttention(nn.Module):
         print("linear ", self.linear(Q).shape, self.linear(K).shape, self.linear(V).shape,)
         return self.linear(Q), self.linear(K), self.linear(V)
     
-        
-    def forward(self, X):
+    def reshapeProjectedFusedQKVTensor(self, X):
         FusedQKVTensor = torch.matmul(X, self.W) # shape: (tokens, 1536)
-        
+                
         token_number = FusedQKVTensor.shape[0]
         # Unpack the tuple into separate Q, K, and V tensors, each shape (tokens, 512)
         Q, K, V = FusedQKVTensor.chunk(3, dim=-1)  
@@ -52,18 +51,17 @@ class MultiHeadAttention(nn.Module):
         Q = Q.reshape(token_number, self.heads, self.embedding_dim // self.heads).transpose(0, 1) 
         K = K.reshape(token_number, self.heads, self.embedding_dim // self.heads).transpose(0, 1)
         V = V.reshape(token_number, self.heads, self.embedding_dim // self.heads).transpose(0, 1)
+        return Q, K, V
         
-        projectedq1, projectedk1, projectedv1 = self.get_projections(Q[0], K[0], V[0]) #10, 64
+    def forward(self, X):
+        Q, K, V = self.reshapeProjectedFusedQKVTensor(X)
         
         #parallelize later
-        final_tensor = self.DotProductAttention(projectedq1, projectedk1, projectedv1) #[10, 64]
+        final_tensor = self.DotProductAttention(Q[0], K[0], V[0]) #[10, 64]
         
         for i in range(1, self.heads):
-            print(i)
-            projectedQ, projectedK, projectedV = self.get_projections(Q[i], K[i], V[i])
-            current = self.DotProductAttention(projectedQ, projectedK, projectedV)
+            current = self.DotProductAttention(Q[i], K[i], V[i])
             final_tensor = torch.cat((final_tensor, current), dim=1)
-            print(final_tensor.shape)
         
         return torch.matmul(final_tensor, self.Wo)
 
