@@ -38,11 +38,11 @@ class MultiHeadAttention(nn.Module):
         print("linear ", self.linear(Q).shape, self.linear(K).shape, self.linear(V).shape,)
         return self.linear(Q), self.linear(K), self.linear(V)
     
-    def MaskedMultiHeadAttention(self, Q, K, V):
+    def MaskedMultiHeadAttention(self,  X, W, Wo):
             # Assuming Q shape is (Batch_Size, Seq_Len, Embed_Dim)
-            seq_len = Q.size(1)
+            seq_len = X.shape[0]
             causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len)
-            return self.MultiHeadAttention(Q, K, V) + causal_mask
+            return self.MultiHeadAttention(X, W, Wo) + causal_mask
         
     def forward(self, X, W, Wo):
         FusedQKVTensor = torch.matmul(X, W) # shape: (tokens, 1536)
